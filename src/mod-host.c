@@ -36,7 +36,6 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <jack/jack.h>
-#include <pthread.h>
 #include <signal.h>
 
 #ifndef SKIP_READLINE
@@ -58,12 +57,17 @@
 #define lilv_free(x) free(x)
 #endif
 
+#if defined(_DARKGLASS_DEVICE_PABLITO) || defined(_MOD_DEVICE_DUO) || defined(_MOD_DEVICE_DUOX) || defined(_MOD_DEVICE_DWARF)
+#include <sys/resource.h>
+#endif
+
 #include "mod-host.h"
 #include "effects.h"
 #include "socket.h"
 #include "protocol.h"
 #include "completer.h"
 #include "monitor.h"
+#include "zix/thread.h"
 #include "info.h"
 
 
@@ -85,7 +89,7 @@
 /* Wherever we should be running */
 static volatile int running;
 /* Thread that calls socket_run() for the JACK internal client */
-static pthread_t intclient_socket_thread;
+static ZixThread intclient_socket_thread;
 
 /*
 ************************************************************************************************************************
@@ -189,6 +193,13 @@ static void effects_connect_cb(proto_t *proto)
 {
     int resp;
     resp = effects_connect(proto->list[1], proto->list[2]);
+    protocol_response_int(resp, proto);
+}
+
+static void effects_connect_matching_cb(proto_t *proto)
+{
+    int resp;
+    resp = effects_connect_matching(proto->list[1], proto->list[2]);
     protocol_response_int(resp, proto);
 }
 
@@ -999,6 +1010,7 @@ static int mod_host_init(jack_client_t* client, int socket_port, int feedback_po
     protocol_add_command(EFFECT_PRESET_SAVE, effects_preset_save_cb);
     protocol_add_command(EFFECT_PRESET_SHOW, effects_preset_show_cb);
     protocol_add_command(EFFECT_CONNECT, effects_connect_cb);
+    protocol_add_command(EFFECT_CONNECT_MATCHING, effects_connect_matching_cb);
     protocol_add_command(EFFECT_DISCONNECT, effects_disconnect_cb);
     protocol_add_command(EFFECT_DISCONNECT_ALL, effects_disconnect_all_cb);
     protocol_add_command(EFFECT_BYPASS, effects_bypass_cb);
@@ -1073,6 +1085,10 @@ static int mod_host_init(jack_client_t* client, int socket_port, int feedback_po
 
 static void* intclient_socket_run(void* ptr)
 {
+#if defined(_DARKGLASS_DEVICE_PABLITO) || defined(_MOD_DEVICE_DUO) || defined(_MOD_DEVICE_DUOX) || defined(_MOD_DEVICE_DWARF)
+    setpriority(PRIO_PROCESS, gettid(), -19);
+#endif
+
     while (running)
         socket_run(0);
 
@@ -1285,7 +1301,7 @@ int jack_initialize(jack_client_t* client, const char* load_init)
         return 1;
 
     running = 1;
-    pthread_create(&intclient_socket_thread, NULL, intclient_socket_run, NULL);
+    zix_thread_create(&intclient_socket_thread, 0, intclient_socket_run, NULL);
 
     return 0;
 }
@@ -1297,7 +1313,7 @@ void jack_finish(void* arg)
 {
     running = 0;
     socket_finish();
-    pthread_join(intclient_socket_thread, NULL);
+    zix_thread_join(intclient_socket_thread, NULL);
     effects_finish(0);
     protocol_remove_commands();
 

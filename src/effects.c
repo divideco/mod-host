@@ -55,6 +55,10 @@ typedef unsigned int uint;
 #include <dlfcn.h>
 #endif
 
+#if defined(_DARKGLASS_DEVICE_PABLITO) || defined(_MOD_DEVICE_DUO) || defined(_MOD_DEVICE_DUOX) || defined(_MOD_DEVICE_DWARF)
+#include <sys/resource.h>
+#endif
+
 /* Jack */
 #include <jack/jack.h>
 #include <jack/intclient.h>
@@ -84,12 +88,13 @@ typedef unsigned int uint;
 #include <lv2/uri-map/uri-map.h>
 #include <lv2/worker/worker.h>
 #include "lv2/control-input-port-change-request.h"
+#include "lv2/control-port-state-update.h"
 #include "lv2/kxstudio-properties.h"
 #include "lv2/lv2-hmi.h"
 #include "lv2/mod-license.h"
 
 // do not enable external-ui support in embed targets
-#if !(defined(_MOD_DEVICE_DUO) || defined(_MOD_DEVICE_DUOX) || defined(_MOD_DEVICE_DWARF))
+#if !(defined(_DARKGLASS_DEVICE_PABLITO) || defined(_MOD_DEVICE_DUO) || defined(_MOD_DEVICE_DUOX) || defined(_MOD_DEVICE_DWARF))
 #define WITH_EXTERNAL_UI_SUPPORT
 #endif
 
@@ -110,10 +115,6 @@ typedef unsigned int uint;
 #endif
 
 #include "mod-host.h"
-#ifdef __MOD_DEVICES__
-#include "sys_host.h"
-#include "dsp/gate_core.h"
-#endif
 
 #ifndef HAVE_NEW_LILV
 #define lilv_free(x) free(x)
@@ -153,6 +154,7 @@ typedef struct {
 #define JackPortIsControlVoltage 0x100
 
 #if defined(_MOD_DEVICE_DUOX) || defined(_MOD_DEVICE_DWARF)
+#define MOD_HMI_CONTROL_ENABLED
 #define MOD_IO_PROCESSING_ENABLED
 #endif
 
@@ -175,6 +177,14 @@ typedef struct {
 #include "rtmempool/rtmempool.h"
 #include "filter.h"
 #include "mod-memset.h"
+
+#ifdef MOD_HMI_CONTROL_ENABLED
+#include "sys_host.h"
+#endif
+
+#ifdef __MOD_DEVICES__
+#include "dsp/gate_core.h"
+#endif
 
 /*
 ************************************************************************************************************************
@@ -223,20 +233,22 @@ enum PortType {
 
 enum PortHints {
     // controls
-    HINT_ENUMERATION   = 1 << 0,
-    HINT_INTEGER       = 1 << 1,
-    HINT_TOGGLE        = 1 << 2,
-    HINT_TRIGGER       = 1 << 3,
-    HINT_LOGARITHMIC   = 1 << 4,
-    HINT_MONITORED     = 1 << 5, // outputs only
-    HINT_SHOULD_UPDATE = 1 << 6, // inputs only, for external UIs
+    HINT_ENUMERATION    = 1 << 0,
+    HINT_INTEGER        = 1 << 1,
+    HINT_TOGGLE         = 1 << 2,
+    HINT_TRIGGER        = 1 << 3,
+    HINT_LOGARITHMIC    = 1 << 4,
+    HINT_MONITORED      = 1 << 5, // outputs only
+    HINT_SHOULD_UPDATE  = 1 << 6, // inputs only, for external UIs
+    HINT_STATE_INACTIVE = 1 << 7,
+    HINT_STATE_BLOCKED  = 1 << 8,
     // cv
-    HINT_CV_MOD        = 1 << 0, // uses mod cvport
-    HINT_CV_RANGES     = 1 << 1, // port info includes ranges
+    HINT_CV_MOD         = 1 << 0, // uses mod cvport
+    HINT_CV_RANGES      = 1 << 1, // port info includes ranges
     // events
-    HINT_TRANSPORT     = 1 << 0,
-    HINT_MIDI_EVENT    = 1 << 1,
-    HINT_OLD_EVENT_API = 1 << 2,
+    HINT_TRANSPORT      = 1 << 0,
+    HINT_MIDI_EVENT     = 1 << 1,
+    HINT_OLD_EVENT_API  = 1 << 2,
 };
 
 enum PluginHints {
@@ -260,7 +272,7 @@ enum {
     URID_MAP_FEATURE,
     URID_UNMAP_FEATURE,
     OPTIONS_FEATURE,
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     HMI_WC_FEATURE,
 #endif
     LICENSE_FEATURE,
@@ -271,6 +283,7 @@ enum {
     STATE_FREE_PATH_FEATURE,
     STATE_MAKE_PATH_FEATURE,
     CTRLPORT_REQUEST_FEATURE,
+    CTRLPORT_STATE_FEATURE,
     WORKER_FEATURE,
 #ifdef WITH_EXTERNAL_UI_SUPPORT
     UI_DATA_ACCESS,
@@ -281,6 +294,7 @@ enum {
 
 enum PostPonedEventType {
     POSTPONED_PARAM_SET,
+    POSTPONED_PARAM_STATE,
     POSTPONED_AUDIO_MONITOR,
     POSTPONED_OUTPUT_MONITOR,
     POSTPONED_MIDI_CONTROL_CHANGE,
@@ -306,7 +320,7 @@ enum UpdatePositionFlag {
 ************************************************************************************************************************
 */
 
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
 typedef struct HMI_ADDRESSING_T hmi_addressing_t;
 #endif
 typedef struct PORT_T port_t;
@@ -346,7 +360,7 @@ typedef struct PORT_T {
     LilvScalePoints* scale_points;
     cv_source_t* cv_source;
     pthread_mutex_t cv_source_mutex;
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     hmi_addressing_t* hmi_addressing;
 #endif
 } port_t;
@@ -589,17 +603,25 @@ typedef struct ASSIGNMENT_T {
     bool supports_set_value;
 } assignment_t;
 
+#ifdef MOD_HMI_CONTROL_ENABLED
 typedef struct HMI_ADDRESSING_T {
     int actuator_id;
     uint8_t page;
     uint8_t subpage;
 } hmi_addressing_t;
+#endif
 
 typedef struct POSTPONED_PARAMETER_EVENT_T {
     int effect_id;
     const char* symbol;
     float value;
 } postponed_parameter_event_t;
+
+typedef struct POSTPONED_PARAMETER_STATE_T {
+    int effect_id;
+    const char* symbol;
+    int state;
+} postponed_parameter_state_t;
 
 typedef struct POSTPONED_AUDIO_MONITOR_EVENT_T {
     int index;
@@ -654,6 +676,7 @@ typedef struct POSTPONED_EVENT_T {
     enum PostPonedEventType type;
     union {
         postponed_parameter_event_t parameter;
+        postponed_parameter_state_t state;
         postponed_audio_monitor_event_t audio_monitor;
         postponed_midi_control_change_event_t control_change;
         postponed_midi_program_change_event_t program_change;
@@ -745,7 +768,7 @@ static pthread_mutex_t  g_rtsafe_mutex;
 static volatile int  g_postevents_running; // 0: stopped, 1: running, -1: stopped & about to close mod-host
 static volatile bool g_postevents_ready;
 static sem_t         g_postevents_semaphore;
-static pthread_t     g_postevents_thread;
+static ZixThread     g_postevents_thread;
 
 /* raw-midi-clock-access ports */
 static struct list_head g_raw_midi_port_list;
@@ -796,7 +819,7 @@ static char *g_lv2_scratch_dir;
 static Symap* g_symap;
 static lilv_nodes_t g_lilv_nodes;
 static urids_t g_urids;
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
 static LV2_HMI_WidgetControl g_hmi_wc;
 #endif
 static MOD_License_Feature g_license;
@@ -826,7 +849,7 @@ static LV2_Feature g_buf_size_features[3] = {
     { LV2_BUF_SIZE__fixedBlockLength, NULL },
     { LV2_BUF_SIZE__boundedBlockLength, NULL }
 };
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
 static LV2_Feature g_hmi_wc_feature = { LV2_HMI__WidgetControl, &g_hmi_wc };
 #endif
 static LV2_Feature g_license_feature = { MOD_LICENSE__feature, &g_license };
@@ -852,23 +875,25 @@ static hylia_t* g_hylia_instance;
 static hylia_time_info_t g_hylia_timeinfo;
 #endif
 
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
 /* HMI integration */
 static int g_hmi_shmfd;
 static sys_serial_shm_data* g_hmi_data;
-static pthread_t g_hmi_client_thread;
+static ZixThread g_hmi_client_thread;
 static pthread_mutex_t g_hmi_mutex;
 static hmi_addressing_t g_hmi_addressings[MAX_HMI_ADDRESSINGS];
+#endif
 
 /* internal processing */
+#ifdef MOD_HMI_CONTROL_ENABLED
 static int g_compressor_mode = 0;
 static int g_compressor_release = 100;
+#endif
 #ifdef MOD_IO_PROCESSING_ENABLED
 static int g_noisegate_channel = 0;
 static int g_noisegate_decay = 10;
 static int g_noisegate_threshold = -60;
 static gate_t g_noisegate;
-#endif
 #endif
 
 static const char* const g_bypass_port_symbol = BYPASS_PORT_SYMBOL;
@@ -892,7 +917,7 @@ static void PortRegistration(jack_port_id_t port_id, int reg, void* data);
 static int XRun(void* data);
 static void RunPostPonedEvents(int ignored_effect_id);
 static void* PostPonedEventsThread(void* arg);
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
 static void* HMIClientThread(void* arg);
 #endif
 static int ProcessPlugin(jack_nframes_t nframes, void *arg);
@@ -915,7 +940,7 @@ static void FreeFeatures(effect_t *effect);
 static void FreePluginString(void* handle, char *str);
 static void ConnectToAllHardwareMIDIPorts(void);
 static void ConnectToMIDIThroughPorts(void);
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
 static void HMIWidgetsSetLedWithBlink(LV2_HMI_WidgetControl_Handle handle,
                                       LV2_HMI_Addressing addressing,
                                       LV2_HMI_LED_Colour led_color,
@@ -947,7 +972,11 @@ static char *GetLicenseFile(MOD_License_Handle handle, const char *license_uri);
 static int LogPrintf(LV2_Log_Handle handle, LV2_URID type, const char *fmt, ...);
 static int LogVPrintf(LV2_Log_Handle handle, LV2_URID type, const char *fmt, va_list ap);
 static LV2_ControlInputPort_Change_Status RequestControlPortChange(LV2_ControlInputPort_Change_Request_Handle handle,
-                                                                   uint32_t index, float value);
+                                                                   uint32_t index,
+                                                                   float value);
+static LV2_Control_Port_State_Update_Status UpdateControlPortState(LV2_Control_Port_State_Update_Handle handle,
+                                                                   uint32_t index,
+                                                                   LV2_Control_Port_State state);
 static char* MakePluginStatePathFromSratchDir(LV2_State_Make_Path_Handle handle, const char *path);
 static char* MakePluginStatePathDuringLoadSave(LV2_State_Make_Path_Handle handle, const char *path);
 #ifdef HAVE_CONTROLCHAIN
@@ -1218,15 +1247,16 @@ static bool ShouldIgnorePostPonedEffectEvent(int effect_id, postponed_cached_eff
     return false;
 }
 
-static bool ShouldIgnorePostPonedSymbolEvent(postponed_parameter_event_t* ev,
+static bool ShouldIgnorePostPonedSymbolEvent(int effect_id,
+                                             const char* symbol,
                                              postponed_cached_symbol_events* cached_events)
 {
     // symbol must not be null
-    if (ev->symbol == NULL)
+    if (symbol == NULL)
         return false;
 
-    if (ev->effect_id == cached_events->last_effect_id &&
-        strncmp(ev->symbol, cached_events->last_symbol, MAX_CHAR_BUF_SIZE) == 0)
+    if (effect_id == cached_events->last_effect_id &&
+        strncmp(symbol, cached_events->last_symbol, MAX_CHAR_BUF_SIZE) == 0)
     {
         // already received this event, like just now
         return true;
@@ -1239,8 +1269,8 @@ static bool ShouldIgnorePostPonedSymbolEvent(postponed_parameter_event_t* ev,
     {
         postponed_cached_symbol_list_data* const psymbol = list_entry(it, postponed_cached_symbol_list_data, siblings);
 
-        if (ev->effect_id == psymbol->effect_id &&
-            strncmp(ev->symbol, psymbol->symbol, MAX_CHAR_BUF_SIZE) == 0)
+        if (effect_id == psymbol->effect_id &&
+            strncmp(symbol, psymbol->symbol, MAX_CHAR_BUF_SIZE) == 0)
         {
             // haha! found you little bastard!
             return true;
@@ -1253,8 +1283,8 @@ static bool ShouldIgnorePostPonedSymbolEvent(postponed_parameter_event_t* ev,
 
     if (psymbol)
     {
-        psymbol->effect_id = ev->effect_id;
-        strncpy(psymbol->symbol, ev->symbol, MAX_CHAR_BUF_SIZE);
+        psymbol->effect_id = effect_id;
+        strncpy(psymbol->symbol, symbol, MAX_CHAR_BUF_SIZE);
         psymbol->symbol[MAX_CHAR_BUF_SIZE] = '\0';
         list_add_tail(&psymbol->siblings, &cached_events->symbols.siblings);
     }
@@ -1313,19 +1343,23 @@ static void RunPostPonedEvents(int ignored_effect_id)
     bool got_midi_program = false;
     bool got_transport = false;
     postponed_cached_effect_events cached_audio_monitor, cached_process_out_buf;
-    postponed_cached_symbol_events cached_param_set, cached_output_mon;
+    postponed_cached_symbol_events cached_param_set, cached_param_state, cached_output_mon;
 
     cached_audio_monitor.last_effect_id = -1;
     cached_process_out_buf.last_effect_id = -1;
     cached_param_set.last_effect_id = -1;
     cached_param_set.last_symbol[0] = '\0';
     cached_param_set.last_symbol[MAX_CHAR_BUF_SIZE] = '\0';
+    cached_param_state.last_effect_id = -1;
+    cached_param_state.last_symbol[0] = '\0';
+    cached_param_state.last_symbol[MAX_CHAR_BUF_SIZE] = '\0';
     cached_output_mon.last_effect_id = -1;
     cached_output_mon.last_symbol[0] = '\0';
     cached_output_mon.last_symbol[MAX_CHAR_BUF_SIZE] = '\0';
     INIT_LIST_HEAD(&cached_audio_monitor.effects.siblings);
     INIT_LIST_HEAD(&cached_process_out_buf.effects.siblings);
     INIT_LIST_HEAD(&cached_param_set.symbols.siblings);
+    INIT_LIST_HEAD(&cached_param_state.symbols.siblings);
     INIT_LIST_HEAD(&cached_output_mon.symbols.siblings);
 
     // if all we have are jack_midi_connect requests, do not send feedback to server
@@ -1359,7 +1393,9 @@ static void RunPostPonedEvents(int ignored_effect_id)
         case POSTPONED_PARAM_SET:
             if (eventptr->event.parameter.effect_id == ignored_effect_id)
                 continue;
-            if (ShouldIgnorePostPonedSymbolEvent(&eventptr->event.parameter, &cached_param_set))
+            if (ShouldIgnorePostPonedSymbolEvent(eventptr->event.parameter.effect_id,
+                                                 eventptr->event.parameter.symbol,
+                                                 &cached_param_set))
                 continue;
 
             snprintf(buf, FEEDBACK_BUF_SIZE, "param_set %i %s %f", eventptr->event.parameter.effect_id,
@@ -1370,6 +1406,24 @@ static void RunPostPonedEvents(int ignored_effect_id)
             // save for fast checkup next time
             cached_param_set.last_effect_id = eventptr->event.parameter.effect_id;
             strncpy(cached_param_set.last_symbol, eventptr->event.parameter.symbol, MAX_CHAR_BUF_SIZE);
+            break;
+
+        case POSTPONED_PARAM_STATE:
+            if (eventptr->event.state.effect_id == ignored_effect_id)
+                continue;
+            if (ShouldIgnorePostPonedSymbolEvent(eventptr->event.state.effect_id,
+                                                 eventptr->event.state.symbol,
+                                                 &cached_param_state))
+                continue;
+
+            snprintf(buf, FEEDBACK_BUF_SIZE, "param_state %i %s %i", eventptr->event.state.effect_id,
+                                                                     eventptr->event.state.symbol,
+                                                                     eventptr->event.state.state);
+            socket_send_feedback_debug(buf);
+
+            // save for fast checkup next time
+            cached_param_state.last_effect_id = eventptr->event.state.effect_id;
+            strncpy(cached_param_state.last_symbol, eventptr->event.state.symbol, MAX_CHAR_BUF_SIZE);
             break;
 
         case POSTPONED_AUDIO_MONITOR:
@@ -1392,7 +1446,9 @@ static void RunPostPonedEvents(int ignored_effect_id)
         case POSTPONED_OUTPUT_MONITOR:
             if (eventptr->event.parameter.effect_id == ignored_effect_id)
                 continue;
-            if (ShouldIgnorePostPonedSymbolEvent(&eventptr->event.parameter, &cached_output_mon))
+            if (ShouldIgnorePostPonedSymbolEvent(eventptr->event.parameter.effect_id,
+                                                 eventptr->event.parameter.symbol,
+                                                 &cached_output_mon))
                 continue;
 
             snprintf(buf, FEEDBACK_BUF_SIZE, "output_set %i %s %f", eventptr->event.parameter.effect_id,
@@ -1693,6 +1749,11 @@ static void RunPostPonedEvents(int ignored_effect_id)
         psymbol = list_entry(it, postponed_cached_symbol_list_data, siblings);
         free(psymbol);
     }
+    list_for_each_safe(it, it2, &cached_param_state.symbols.siblings)
+    {
+        psymbol = list_entry(it, postponed_cached_symbol_list_data, siblings);
+        free(psymbol);
+    }
     list_for_each_safe(it, it2, &cached_output_mon.symbols.siblings)
     {
         psymbol = list_entry(it, postponed_cached_symbol_list_data, siblings);
@@ -1752,6 +1813,10 @@ static void RunPostPonedEvents(int ignored_effect_id)
 
 static void* PostPonedEventsThread(void* arg)
 {
+#if defined(_DARKGLASS_DEVICE_PABLITO) || defined(_MOD_DEVICE_DUO) || defined(_MOD_DEVICE_DUOX) || defined(_MOD_DEVICE_DWARF)
+    setpriority(PRIO_PROCESS, gettid(), -18);
+#endif
+
     while (g_postevents_running == 1)
     {
         if (sem_timedwait_secs(&g_postevents_semaphore, 1) != 0)
@@ -1777,7 +1842,7 @@ static void* PostPonedEventsThread(void* arg)
     UNUSED_PARAM(arg);
 }
 
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
 static void* HMIClientThread(void* arg)
 {
     sys_serial_shm_data_channel* const data = (sys_serial_shm_data_channel*)arg;
@@ -3258,6 +3323,16 @@ static void GetFeatures(effect_t *effect)
     ctrlportReqChange_feature->URI = LV2_CONTROL_INPUT_PORT_CHANGE_REQUEST_URI;
     ctrlportReqChange_feature->data = ctrlportReqChange;
 
+    /* Control Port state update feature, includes custom pointer */
+    LV2_Control_Port_State_Update *ctrlportStateUpdate
+        = (LV2_Control_Port_State_Update*) malloc(sizeof(LV2_Control_Port_State_Update));
+    ctrlportStateUpdate->handle = effect;
+    ctrlportStateUpdate->update_state = UpdateControlPortState;
+
+    LV2_Feature *ctrlportStateUpdate_feature = (LV2_Feature*) malloc(sizeof(LV2_Feature));
+    ctrlportStateUpdate_feature->URI = LV2_CONTROL_PORT_STATE_UPDATE_URI;
+    ctrlportStateUpdate_feature->data = ctrlportStateUpdate;
+
     /* Worker Feature, must be last as it can be null */
     LV2_Feature *work_schedule_feature = NULL;
 
@@ -3279,7 +3354,7 @@ static void GetFeatures(effect_t *effect)
     features[URID_MAP_FEATURE]          = &g_urid_map_feature;
     features[URID_UNMAP_FEATURE]        = &g_urid_unmap_feature;
     features[OPTIONS_FEATURE]           = &g_options_feature;
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     features[HMI_WC_FEATURE]            = &g_hmi_wc_feature;
 #endif
     features[LICENSE_FEATURE]           = &g_license_feature;
@@ -3290,6 +3365,7 @@ static void GetFeatures(effect_t *effect)
     features[STATE_FREE_PATH_FEATURE]   = &g_state_freePath_feature;
     features[STATE_MAKE_PATH_FEATURE]   = state_make_path_feature;
     features[CTRLPORT_REQUEST_FEATURE]  = ctrlportReqChange_feature;
+    features[CTRLPORT_STATE_FEATURE]    = ctrlportStateUpdate_feature;
     features[WORKER_FEATURE]            = work_schedule_feature;
 #ifdef WITH_EXTERNAL_UI_SUPPORT
     features[UI_DATA_ACCESS]            = NULL;
@@ -3460,6 +3536,11 @@ static void FreeFeatures(effect_t *effect)
             free(effect->features[CTRLPORT_REQUEST_FEATURE]->data);
             free((void*)effect->features[CTRLPORT_REQUEST_FEATURE]);
         }
+        if (effect->features[CTRLPORT_STATE_FEATURE])
+        {
+            free(effect->features[CTRLPORT_STATE_FEATURE]->data);
+            free((void*)effect->features[CTRLPORT_STATE_FEATURE]);
+        }
         if (effect->features[WORKER_FEATURE])
         {
             free(effect->features[WORKER_FEATURE]->data);
@@ -3546,7 +3627,7 @@ static void ConnectToMIDIThroughPorts(void)
     }
 }
 
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
 static void HMIWidgetsSetLedWithBlink(LV2_HMI_WidgetControl_Handle handle,
                                       LV2_HMI_Addressing addressing_ptr,
                                       LV2_HMI_LED_Colour led_color,
@@ -3966,7 +4047,8 @@ static int LogVPrintf(LV2_Log_Handle handle, LV2_URID type, const char* fmt, va_
 }
 
 static LV2_ControlInputPort_Change_Status RequestControlPortChange(LV2_ControlInputPort_Change_Request_Handle handle,
-                                                                   uint32_t index, float value)
+                                                                   uint32_t index,
+                                                                   float value)
 {
     effect_t *effect = (effect_t*)handle;
 
@@ -3986,6 +4068,65 @@ static LV2_ControlInputPort_Change_Status RequestControlPortChange(LV2_ControlIn
         sem_post(&g_postevents_semaphore);
 
     return LV2_CONTROL_INPUT_PORT_CHANGE_SUCCESS;
+}
+
+static LV2_Control_Port_State_Update_Status UpdateControlPortState(LV2_Control_Port_State_Update_Handle handle,
+                                                                   uint32_t index,
+                                                                   LV2_Control_Port_State state)
+{
+    effect_t *effect = (effect_t*)handle;
+
+    if (index >= effect->ports_count)
+        return LV2_CONTROL_PORT_STATE_UPDATE_ERR_INVALID_INDEX;
+
+    port_t *port = effect->ports[index];
+
+    if (port->type != TYPE_CONTROL)
+        return LV2_CONTROL_PORT_STATE_UPDATE_ERR_INVALID_INDEX;
+
+    LV2_Control_Port_State curstate;
+    if (port->hints & HINT_STATE_BLOCKED)
+        curstate = LV2_CONTROL_PORT_STATE_BLOCKED;
+    else if (port->hints & HINT_STATE_INACTIVE)
+        curstate = LV2_CONTROL_PORT_STATE_INACTIVE;
+    else
+        curstate = LV2_CONTROL_PORT_STATE_NONE;
+
+    if (curstate == state)
+        return LV2_CONTROL_PORT_STATE_UPDATE_SUCCESS;
+
+    postponed_event_list_data* const posteventptr =
+        rtsafe_memory_pool_allocate_atomic(g_rtsafe_mem_pool);
+
+    if (posteventptr == NULL)
+        return LV2_CONTROL_PORT_STATE_UPDATE_ERR_UNKNOWN;
+
+    switch (state)
+    {
+    case LV2_CONTROL_PORT_STATE_NONE:
+        port->hints &= ~(HINT_STATE_INACTIVE|HINT_STATE_BLOCKED);
+        break;
+    case LV2_CONTROL_PORT_STATE_INACTIVE:
+        port->hints |= HINT_STATE_INACTIVE;
+        port->hints &= ~HINT_STATE_BLOCKED;
+        break;
+    case LV2_CONTROL_PORT_STATE_BLOCKED:
+        port->hints |= HINT_STATE_INACTIVE|HINT_STATE_BLOCKED;
+        break;
+    }
+
+    posteventptr->event.type = POSTPONED_PARAM_STATE;
+    posteventptr->event.state.effect_id = effect->instance;
+    posteventptr->event.state.symbol    = port->symbol;
+    posteventptr->event.state.state     = state;
+
+    pthread_mutex_lock(&g_rtsafe_mutex);
+    list_add_tail(&posteventptr->siblings, &g_rtsafe_list);
+    pthread_mutex_unlock(&g_rtsafe_mutex);
+
+    sem_post(&g_postevents_semaphore);
+
+    return LV2_CONTROL_PORT_STATE_UPDATE_SUCCESS;
 }
 
 static char* MakePluginStatePathFromSratchDir(LV2_State_Make_Path_Handle handle, const char *path)
@@ -4250,7 +4391,7 @@ int effects_init(void* client)
     pthread_mutex_init(&g_audio_monitor_mutex, &mutex_atts);
     pthread_mutex_init(&g_midi_learning_mutex, &mutex_atts);
     pthread_mutex_init(&g_multi_thread_mutex, &mutex_atts);
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     pthread_mutex_init(&g_hmi_mutex, &mutex_atts);
 #endif
 
@@ -4602,7 +4743,7 @@ int effects_init(void* client)
     g_options[8].type = 0;
     g_options[8].value = NULL;
 
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     g_hmi_wc.size                    = sizeof(g_hmi_wc);
     g_hmi_wc.set_led_with_blink      = HMIWidgetsSetLedWithBlink;
     g_hmi_wc.set_led_with_brightness = HMIWidgetsSetLedWithBrightness;
@@ -4619,7 +4760,7 @@ int effects_init(void* client)
         {
             g_hmi_wc.handle = g_hmi_data;
             sys_serial_write(&g_hmi_data->server, sys_serial_event_type_special_req, 0, 0, "restart");
-            pthread_create(&g_hmi_client_thread, NULL, HMIClientThread, &g_hmi_data->client);
+            zix_thread_create(&g_hmi_client_thread, 0, HMIClientThread, &g_hmi_data->client);
         }
         else
         {
@@ -4630,10 +4771,10 @@ int effects_init(void* client)
 
     for (int i = 0; i < MAX_HMI_ADDRESSINGS; i++)
         g_hmi_addressings[i].actuator_id = -1;
+#endif
 
 #ifdef MOD_IO_PROCESSING_ENABLED
     gate_init(&g_noisegate);
-#endif
 #endif
 
     g_license.handle = NULL;
@@ -4684,7 +4825,7 @@ int effects_init(void* client)
     /* Start the thread that consumes from the event queue */
     g_postevents_running = 1;
     g_postevents_ready = true;
-    pthread_create(&g_postevents_thread, NULL, PostPonedEventsThread, NULL);
+    zix_thread_create(&g_postevents_thread, 0, PostPonedEventsThread, NULL);
 
     /* get transport state */
     UpdateGlobalJackPosition(UPDATE_POSITION_SKIP, false);
@@ -4749,21 +4890,21 @@ int effects_finish(int close_client)
 {
     g_postevents_running = -1;
     sem_post(&g_postevents_semaphore);
-    pthread_join(g_postevents_thread, NULL);
+    zix_thread_join(g_postevents_thread, NULL);
 
     if (close_client)
         monitor_client_stop();
 
     effects_remove(REMOVE_ALL);
 
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     if (g_hmi_data != NULL)
     {
         sys_serial_shm_data* hmi_data = g_hmi_data;
         g_hmi_data = NULL;
 
         sem_post(&hmi_data->client.sem);
-        pthread_join(g_hmi_client_thread, NULL);
+        zix_thread_join(g_hmi_client_thread, NULL);
 
         sys_serial_close(g_hmi_shmfd, hmi_data);
     }
@@ -4834,7 +4975,7 @@ int effects_finish(int close_client)
     pthread_mutex_destroy(&g_audio_monitor_mutex);
     pthread_mutex_destroy(&g_midi_learning_mutex);
     pthread_mutex_destroy(&g_multi_thread_mutex);
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     pthread_mutex_destroy(&g_hmi_mutex);
 #endif
 
@@ -5836,7 +5977,7 @@ static void* effects_add_thread(void* arg)
 int effects_add_multi(int activate, int num_effects, int *effects, const char *const *uris)
 {
     int num_threads = 0;
-    pthread_t *threads = malloc(sizeof(pthread_t) * num_effects);
+    ZixThread *threads = malloc(sizeof(ZixThread) * num_effects);
     effects_add_thread_data_t *data = malloc(sizeof(effects_add_thread_data_t) * num_effects);
 
     if (!threads || !data)
@@ -5853,14 +5994,14 @@ int effects_add_multi(int activate, int num_effects, int *effects, const char *c
         arg->effect_id = effects[i];
         arg->activate = activate;
 
-        if (pthread_create(&threads[num_threads], NULL, effects_add_thread, arg) == 0)
+        if (zix_thread_create(&threads[num_threads], 0, effects_add_thread, arg) == 0)
             ++num_threads;
         else
             effects_add(uris[i], effects[i], activate);
     }
 
     for (int i = 0; i < num_threads; ++i)
-        pthread_join(threads[i], NULL);
+        zix_thread_join(threads[i], NULL);
 
     free(threads);
     free(data);
@@ -6055,7 +6196,7 @@ static void effects_remove_inner_pre(int effect_id)
         }
 #endif
 
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
         for (int i = 0; i < MAX_HMI_ADDRESSINGS; i++)
             g_hmi_addressings[i].actuator_id = -1;
 
@@ -6065,10 +6206,10 @@ static void effects_remove_inner_pre(int effect_id)
             sys_serial_write(&g_hmi_data->server, sys_serial_event_type_special_req, 0, 0, "pages");
             pthread_mutex_unlock(&g_hmi_mutex);
         }
+#endif
 
         // this resets volume back 0dB if needed
         // monitor_client_setup_volume(0.0f);
-#endif
 
         // reset all events
         struct list_head queue, *it, *it2;
@@ -6205,7 +6346,7 @@ static void effects_remove_inner_loop(int effect_id)
         {
             if (effect->ports[i])
             {
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
                 if (effect->ports[i]->hmi_addressing != NULL)
                 {
                     if (g_hmi_data != NULL)
@@ -6341,7 +6482,7 @@ int effects_remove(int effect_id)
     {
         g_postevents_running = 0;
         sem_post(&g_postevents_semaphore);
-        pthread_join(g_postevents_thread, NULL);
+        zix_thread_join(g_postevents_thread, NULL);
     }
 
     // disconnect system ports
@@ -6418,7 +6559,7 @@ int effects_remove(int effect_id)
         }
 
         g_postevents_running = 1;
-        pthread_create(&g_postevents_thread, NULL, PostPonedEventsThread, NULL);
+        zix_thread_create(&g_postevents_thread, 0, PostPonedEventsThread, NULL);
     }
 
     return SUCCESS;
@@ -6433,7 +6574,7 @@ int effects_remove_multi(int num_effects, int *effects)
         return effects_remove(*effects);
 
     int num_threads = 0;
-    pthread_t *threads = malloc(sizeof(pthread_t) * num_effects);
+    ZixThread *threads = malloc(sizeof(ZixThread) * num_effects);
     effect_t *effect;
 
     if (!threads)
@@ -6444,7 +6585,7 @@ int effects_remove_multi(int num_effects, int *effects)
     {
         g_postevents_running = 0;
         sem_post(&g_postevents_semaphore);
-        pthread_join(g_postevents_thread, NULL);
+        zix_thread_join(g_postevents_thread, NULL);
     }
 
     // stop plugins processing
@@ -6458,7 +6599,7 @@ int effects_remove_multi(int num_effects, int *effects)
 
         if (effect->activated)
         {
-            if (pthread_create(&threads[num_threads], NULL, effects_deactivate_thread, effect->jack_client) == 0)
+            if (zix_thread_create(&threads[num_threads], sizeof(void*), effects_deactivate_thread, effect->jack_client) == 0)
                 ++num_threads;
             else
                 jack_deactivate(effect->jack_client);
@@ -6466,7 +6607,7 @@ int effects_remove_multi(int num_effects, int *effects)
     }
 
     for (int i = 0; i < num_threads; ++i)
-        pthread_join(threads[i], NULL);
+        zix_thread_join(threads[i], NULL);
 
     // remove addressings, midi learn and other stuff related to plugins
     for (int i = 0, effect_id; i < num_effects; ++i)
@@ -6487,14 +6628,14 @@ int effects_remove_multi(int num_effects, int *effects)
         if (!InstanceExist(effect_id))
             continue;
 
-        if (pthread_create(&threads[num_threads], NULL, effects_remove_inner_loop_thread, &effects[i]) == 0)
+        if (zix_thread_create(&threads[num_threads], PATH_MAX + sizeof(void*), effects_remove_inner_loop_thread, &effects[i]) == 0)
             ++num_threads;
         else
             effects_remove_inner_loop(effect_id);
     }
 
     for (int i = 0; i < num_threads; ++i)
-        pthread_join(threads[i], NULL);
+        zix_thread_join(threads[i], NULL);
 
     // start thread again
     if (g_postevents_running == 0)
@@ -6506,7 +6647,7 @@ int effects_remove_multi(int num_effects, int *effects)
         }
 
         g_postevents_running = 1;
-        pthread_create(&g_postevents_thread, NULL, PostPonedEventsThread, NULL);
+        zix_thread_create(&g_postevents_thread, 0, PostPonedEventsThread, NULL);
     }
 
     free(threads);
@@ -6585,7 +6726,7 @@ int effects_activate_multi(int value, int num_effects, int *effects)
         return effects_activate(*effects, value);
 
     int num_threads = 0;
-    pthread_t *threads = malloc(sizeof(pthread_t) * num_effects);
+    ZixThread *threads = malloc(sizeof(ZixThread) * num_effects);
 
     if (!threads)
         return ERR_MEMORY_ALLOCATION;
@@ -6609,7 +6750,7 @@ int effects_activate_multi(int value, int num_effects, int *effects)
                 effect->activated = true;
                 lilv_instance_activate(effect->lilv_instance);
 
-                if (pthread_create(&threads[num_threads], NULL, effects_activate_thread, effect->jack_client) == 0)
+                if (zix_thread_create(&threads[num_threads], sizeof(void*), effects_activate_thread, effect->jack_client) == 0)
                     ++num_threads;
                 else
                     jack_activate(effect->jack_client);
@@ -6619,7 +6760,7 @@ int effects_activate_multi(int value, int num_effects, int *effects)
         {
             if (effect->activated)
             {
-                if (pthread_create(&threads[num_threads], NULL, effects_deactivate_thread, effect->jack_client) == 0)
+                if (zix_thread_create(&threads[num_threads], sizeof(void*), effects_deactivate_thread, effect->jack_client) == 0)
                     ++num_threads;
                 else
                     jack_deactivate(effect->jack_client);
@@ -6629,7 +6770,7 @@ int effects_activate_multi(int value, int num_effects, int *effects)
 
     // wait for all threads to be done
     for (int i = 0; i < num_threads; ++i)
-        pthread_join(threads[i], NULL);
+        zix_thread_join(threads[i], NULL);
 
     free(threads);
 
@@ -6663,6 +6804,23 @@ int effects_connect(const char *portA, const char *portB)
     if (ret != 0) return ERR_JACK_PORT_CONNECTION;
 
     return ret;
+}
+
+int effects_connect_matching(const char *matching, const char *port)
+{
+    const jack_port_t *jport = jack_port_by_name(g_jack_global_client, matching);
+    if (!jport)
+        return ERR_JACK_PORT_CONNECTION;
+
+    const char **jports = jack_port_get_connections(jport);
+    if (jports)
+    {
+        for (int i = 0; jports[i]; ++i)
+            jack_connect(g_jack_global_client, jports[i], port);
+        jack_free(jports);
+    }
+
+    return SUCCESS;
 }
 
 int effects_disconnect(const char *portA, const char *portB)
@@ -7346,7 +7504,7 @@ int effects_monitor_output_parameter(int effect_id, const char *control_symbol_o
             {
                 g_postevents_running = 0;
                 sem_post(&g_postevents_semaphore);
-                pthread_join(g_postevents_thread, NULL);
+                zix_thread_join(g_postevents_thread, NULL);
             }
 
             // flush events for all effects except this one
@@ -7362,7 +7520,7 @@ int effects_monitor_output_parameter(int effect_id, const char *control_symbol_o
                 }
 
                 g_postevents_running = 1;
-                pthread_create(&g_postevents_thread, NULL, PostPonedEventsThread, NULL);
+                zix_thread_create(&g_postevents_thread, 0, PostPonedEventsThread, NULL);
             }
 
             return SUCCESS;
@@ -8391,7 +8549,7 @@ int effects_cv_unmap(int effect_id, const char *control_symbol)
 int effects_hmi_map(int effect_id, const char *control_symbol, int hw_id, int page, int subpage,
                     int caps, int flags, const char *label, float minimum, float maximum, int steps)
 {
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     if (!InstanceExist(effect_id))
         return ERR_INSTANCE_NON_EXISTS;
     if (effect_id >= MAX_PLUGIN_INSTANCES)
@@ -8483,7 +8641,7 @@ int effects_hmi_map(int effect_id, const char *control_symbol, int hw_id, int pa
 
 int effects_hmi_unmap(int effect_id, const char *control_symbol)
 {
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
     if (!InstanceExist(effect_id))
         return ERR_INSTANCE_NON_EXISTS;
 
@@ -8663,7 +8821,7 @@ int effects_state_load(const char *dir)
         &g_urid_map_feature,
         &g_urid_unmap_feature,
         &g_options_feature,
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
         &g_hmi_wc_feature,
 #endif
         &g_license_feature,
@@ -8674,6 +8832,7 @@ int effects_state_load(const char *dir)
         &g_state_freePath_feature,
         &feature_makePath,
         NULL, // ctrlPortReq
+        NULL, // ctrlPortStateUpdate
         NULL, // worker
         NULL
     };
@@ -8703,6 +8862,7 @@ int effects_state_load(const char *dir)
 
         makePath.handle = effect;
         features[CTRLPORT_REQUEST_FEATURE] = effect->features[CTRLPORT_REQUEST_FEATURE];
+        features[CTRLPORT_STATE_FEATURE] = effect->features[CTRLPORT_STATE_FEATURE];
         features[WORKER_FEATURE] = effect->features[WORKER_FEATURE];
 
         if (effect->hints & HINT_STATE_UNSAFE)
@@ -8756,7 +8916,7 @@ int effects_state_save(const char *dir)
         &g_urid_map_feature,
         &g_urid_unmap_feature,
         &g_options_feature,
-#ifdef __MOD_DEVICES__
+#ifdef MOD_HMI_CONTROL_ENABLED
         &g_hmi_wc_feature,
 #endif
         &g_license_feature,
@@ -8767,6 +8927,7 @@ int effects_state_save(const char *dir)
         &g_state_freePath_feature,
         &feature_makePath,
         NULL, // ctrlPortReq
+        NULL, // ctrlPortStateUpdate
         NULL, // worker
         NULL
     };
@@ -8790,6 +8951,7 @@ int effects_state_save(const char *dir)
 
             makePath.handle = effect;
             features[CTRLPORT_REQUEST_FEATURE] = effect->features[CTRLPORT_REQUEST_FEATURE];
+            features[CTRLPORT_STATE_FEATURE] = effect->features[CTRLPORT_STATE_FEATURE];
             features[WORKER_FEATURE] = effect->features[WORKER_FEATURE];
 
             effect->state_dir = dir;
